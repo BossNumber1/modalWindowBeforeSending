@@ -1,0 +1,76 @@
+image: node:14-alpine
+
+# variables:
+#   TAG_LATEST: "${CI_REGISTRY_IMAGE}/${CI_COMMIT_REF_NAME}:latest"
+#   TAG_COMMIT: "${CI_REGISTRY_IMAGE}/${CI_COMMIT_REF_NAME}:${CI_COMMIT_SHORT_SHA}"
+#   #TAG_COMMIT: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHA
+#   APP_NAME: web-lk
+
+stages:
+  - build
+  - docker
+  - deploy
+
+variables:
+  GIT_STRATEGY: none
+
+build:
+  tags:
+    - deploy
+  stage: build
+  environment: production
+  variables:
+    GIT_STRATEGY: clone
+  script:
+    - echo "@problembo:registry=https://git.remap.ru/api/v4/packages/npm/" >> .npmrc
+    - echo "//git.remap.ru/api/v4/packages/npm/:_authToken=${CI_JOB_TOKEN}" >> .npmrc
+    - npm install
+    - npm run build
+  artifacts:
+    name: "${CI_STAGE_NAME}_${CI_JOB_NAME}_${CI_COMMIT_REF_NAME}"
+    paths:
+      - build/
+      - etc/
+      # - .dockerignore
+      - Dockerfile
+
+docker:
+  variables:
+    TAG_LATEST: "${CI_REGISTRY_IMAGE}/${CI_COMMIT_REF_NAME}:latest"
+    TAG_COMMIT: "${CI_REGISTRY_IMAGE}/${CI_COMMIT_REF_NAME}:${CI_COMMIT_SHORT_SHA}"
+    #TAG_COMMIT: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHA
+    APP_NAME: web-lk
+  tags:
+    - deploy
+  stage: docker
+  dependencies:
+    - build
+  image: docker:20.10.6-dind
+  script:
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY
+    - "docker build --cache-from ${TAG_LATEST} -t ${TAG_COMMIT} -t ${TAG_LATEST} ."
+    - "docker push ${TAG_LATEST}"
+    - "docker push ${TAG_COMMIT}"
+  only:
+    - development
+
+deploy:
+  variables:
+    TAG_LATEST: "${CI_REGISTRY_IMAGE}/${CI_COMMIT_REF_NAME}:latest"
+    TAG_COMMIT: "${CI_REGISTRY_IMAGE}/${CI_COMMIT_REF_NAME}:${CI_COMMIT_SHORT_SHA}"
+    #TAG_COMMIT: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHA
+    APP_NAME: web-lk
+  image: alpine:3.13.5
+  stage: deploy
+  tags:
+    - deploy
+  dependencies: []
+  script:
+    - chmod 0400 $DEPLOY_DEV_ID_RSA
+    - apk update && apk add openssh-client
+    - ssh -i $DEPLOY_DEV_ID_RSA -o StrictHostKeyChecking=no $DEPLOY_DEV_SSH_HOST "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY"
+    - ssh -i $DEPLOY_DEV_ID_RSA -o StrictHostKeyChecking=no $DEPLOY_DEV_SSH_HOST "docker pull ${TAG_COMMIT}"
+    - ssh -i $DEPLOY_DEV_ID_RSA -o StrictHostKeyChecking=no $DEPLOY_DEV_SSH_HOST "docker container rm -f $APP_NAME || true"
+    - ssh -i $DEPLOY_DEV_ID_RSA -o StrictHostKeyChecking=no $DEPLOY_DEV_SSH_HOST "docker run -d --restart always -p 8082:80 --name $APP_NAME ${TAG_COMMIT}"
+  only:
+    - development
